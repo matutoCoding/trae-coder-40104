@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, GitMerge, Clock } from 'lucide-react';
+import { Plus, Pencil, Trash2, GitMerge, Clock, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '@/store/useStore';
 import { formatTime, formatDuration, getElapsedMinutes } from '@/utils/billing';
@@ -24,12 +24,17 @@ function timeToX(dateStr: string): number {
 interface BlockPopupProps {
   occupation: Occupation;
   onSplit: () => void;
+  onCloseNow: () => void;
   onClose: () => void;
   position: { x: number; y: number };
 }
 
-function BlockPopup({ occupation, onSplit, onClose, position }: BlockPopupProps) {
+function BlockPopup({ occupation, onSplit, onCloseNow, onClose, position }: BlockPopupProps) {
   const elapsed = getElapsedMinutes(occupation.startTime);
+  const tiers = useStore(s => s.getTiersForTable(occupation.tableId));
+  const live = useStore(s => s.getLiveBillDetails(occupation.id));
+  const tables = useStore(s => s.tables);
+  const table = tables.find(t => t.id === occupation.tableId);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -42,10 +47,14 @@ function BlockPopup({ occupation, onSplit, onClose, position }: BlockPopupProps)
 
   return (
     <div
-      className="block-popup absolute z-40 w-56 rounded-lg border border-billiard-border bg-billiard-card p-3 shadow-xl"
+      className="block-popup absolute z-40 w-60 rounded-lg border border-billiard-border bg-billiard-card p-3 shadow-xl"
       style={{ left: position.x, top: position.y }}
     >
       <div className="mb-2 space-y-1">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-billiard-text-muted">球台</span>
+          <span className="font-medium text-billiard-text">{table?.name ?? '-'}</span>
+        </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-billiard-text-muted">客户</span>
           <span className="font-medium text-billiard-text">{occupation.customerName}</span>
@@ -56,25 +65,40 @@ function BlockPopup({ occupation, onSplit, onClose, position }: BlockPopupProps)
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-billiard-text-muted">结束</span>
-          <span className="text-billiard-text">{occupation.endTime ? formatTime(occupation.endTime) : '进行中'}</span>
+          <span className="text-billiard-text">
+            {occupation.endTime ? formatTime(occupation.endTime) : '进行中'}
+          </span>
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-billiard-text-muted">时长</span>
           <span className="text-billiard-gold">{formatDuration(elapsed)}</span>
         </div>
+        <div className="flex items-center justify-between text-sm pt-1 border-t border-billiard-border/50 mt-1">
+          <span className="text-billiard-text-muted">当前费用</span>
+          <span className="text-billiard-gold font-bold">¥{live.total.toFixed(2)}</span>
+        </div>
         {occupation.mergedFrom.length > 0 && (
           <div className="flex items-center gap-1 text-xs text-billiard-text-muted">
             <GitMerge size={12} />
-            <span>已合并 {occupation.mergedFrom.length} 条记录</span>
+            <span>已合并 {occupation.mergedFrom.length + 1} 段</span>
           </div>
         )}
       </div>
-      <button
-        onClick={onSplit}
-        className="w-full rounded-md bg-billiard-surface px-3 py-1.5 text-sm text-billiard-gold hover:bg-billiard-border transition-colors"
-      >
-        散场拆分
-      </button>
+      <div className="flex flex-col gap-1.5">
+        <button
+          onClick={onCloseNow}
+          className="flex items-center justify-center gap-1 w-full rounded-md bg-billiard-gold px-3 py-1.5 text-sm text-billiard-bg hover:bg-billiard-gold-dark transition-colors font-medium"
+        >
+          <LogOut size={13} />
+          立即结账
+        </button>
+        <button
+          onClick={onSplit}
+          className="w-full rounded-md bg-billiard-surface px-3 py-1.5 text-sm text-billiard-gold hover:bg-billiard-border transition-colors"
+        >
+          散场拆分
+        </button>
+      </div>
     </div>
   );
 }
@@ -85,6 +109,8 @@ export default function Schedule() {
   const tierGroups = useStore(s => s.tierGroups);
   const deleteTable = useStore(s => s.deleteTable);
   const openTable = useStore(s => s.openTable);
+  const closeTable = useStore(s => s.closeTable);
+  const closeTableByOccupation = useStore(s => s.closeTableByOccupation);
 
   const [formModalOpen, setFormModalOpen] = useState(false);
   const [editingTable, setEditingTable] = useState<TableItem | undefined>(undefined);
@@ -125,7 +151,7 @@ export default function Schedule() {
     setPopupInfo({
       occupation,
       position: {
-        x: rect.left - containerRect.left + rect.width / 2 - 112,
+        x: rect.left - containerRect.left + rect.width / 2 - 120,
         y: rect.bottom - containerRect.top + 4,
       },
     });
@@ -139,25 +165,38 @@ export default function Schedule() {
     }
   }, [popupInfo]);
 
+  const handleCloseNowFromPopup = useCallback(() => {
+    if (popupInfo) {
+      closeTableByOccupation(popupInfo.occupation.id);
+      setPopupInfo(null);
+    }
+  }, [popupInfo, closeTableByOccupation]);
+
   const handleTimelineClick = useCallback((tableId: string, e: React.MouseEvent) => {
     if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
     const scrollLeft = timelineRef.current.scrollLeft;
     const x = e.clientX - rect.left + scrollLeft;
     const totalMinutes = (x / HOUR_WIDTH) * 60;
-    const hour = Math.floor(totalMinutes / 60) + START_HOUR;
-    const minute = Math.floor(totalMinutes % 60);
+    let hour = Math.floor(totalMinutes / 60) + START_HOUR;
+    let minute = Math.round((totalMinutes % 60) / 5) * 5;
+    if (minute >= 60) {
+      hour += 1;
+      minute = 0;
+    }
 
     if (hour < START_HOUR || hour >= END_HOUR) return;
 
     const table = tables.find(t => t.id === tableId);
-    if (!table || table.status !== 'available') return;
+    if (!table) return;
 
-    const name = prompt(`开台 - ${table.name}\n${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}\n请输入客户姓名:`);
+    const name = window.prompt(`开台 - ${table.name}\n预约时间: ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}\n请输入客户姓名:`);
     if (!name) return;
+    const phone = window.prompt('请输入客户电话:') || '';
 
-    const phone = prompt('请输入客户电话:') || '';
-    openTable(tableId, name, phone);
+    const startDate = new Date();
+    startDate.setHours(hour, minute, 0, 0);
+    openTable(tableId, name, phone, startDate.toISOString());
   }, [tables, openTable]);
 
   const nowX = ((now.getHours() - START_HOUR) + now.getMinutes() / 60) * HOUR_WIDTH;
@@ -253,7 +292,12 @@ export default function Schedule() {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-billiard-text">今日排期时间线</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-billiard-text">今日排期时间线</h2>
+          <div className="text-xs text-billiard-text-muted">
+            点击时间线任意位置开台（按点选时间为开始时间）
+          </div>
+        </div>
         <div
           ref={timelineRef}
           className="relative overflow-x-auto rounded-xl border border-billiard-border bg-billiard-surface"
@@ -310,21 +354,28 @@ export default function Schedule() {
 
                     {tableOccs.map(occ => {
                       const startX = Math.max(0, timeToX(occ.startTime));
-                      const endX = occ.endTime
-                        ? timeToX(occ.endTime)
-                        : Math.min(timeToX(new Date().toISOString()), TIMELINE_WIDTH);
+                      let endX: number;
+                      if (occ.endTime) {
+                        endX = Math.min(TIMELINE_WIDTH, timeToX(occ.endTime));
+                      } else {
+                        const currentX = Math.max(startX, timeToX(new Date().toISOString()));
+                        endX = Math.min(TIMELINE_WIDTH, currentX);
+                      }
                       const width = Math.max(HOUR_WIDTH / 4, endX - startX);
                       const isActive = occ.endTime === null;
+                      const isFuture = new Date(occ.startTime).getTime() > Date.now();
 
                       return (
                         <div
                           key={occ.id}
                           onClick={e => handleBlockClick(occ, e)}
                           className={cn(
-                            'absolute top-1 z-10 flex cursor-pointer items-center overflow-hidden rounded-md px-2',
+                            'absolute top-1 z-10 flex cursor-pointer items-center overflow-hidden rounded-md px-2 transition-colors',
                             isActive
-                              ? 'bg-emerald-800/70 hover:bg-emerald-700/80'
-                              : 'bg-billiard-border/60 hover:bg-billiard-border/80',
+                              ? 'bg-emerald-800/80 hover:bg-emerald-700/90 ring-1 ring-emerald-500/50'
+                              : isFuture
+                              ? 'bg-amber-900/60 hover:bg-amber-800/70 ring-1 ring-amber-500/30'
+                              : 'bg-billiard-border/70 hover:bg-billiard-border/90'
                           )}
                           style={{ left: startX, width, height: ROW_HEIGHT - 8 }}
                         >
@@ -350,10 +401,13 @@ export default function Schedule() {
                 className="absolute top-0 z-30 pointer-events-none"
                 style={{ left: nowX + 140 }}
               >
-                <div className="h-full w-0.5 bg-billiard-gold" style={{ minHeight: ROW_HEIGHT }}>
+                <div
+                  className="h-full w-0.5 bg-billiard-gold"
+                  style={{ minHeight: ROW_HEIGHT * tables.length + 40 }}
+                >
                   <div className="relative -top-3 -left-2 flex items-center gap-0.5">
                     <Clock size={10} className="text-billiard-gold" />
-                    <span className="text-[10px] font-medium text-billiard-gold whitespace-nowrap">
+                    <span className="text-[10px] font-medium text-billiard-gold whitespace-nowrap bg-billiard-card border border-billiard-gold/50 rounded px-1">
                       {String(now.getHours()).padStart(2, '0')}:{String(now.getMinutes()).padStart(2, '0')}
                     </span>
                   </div>
@@ -367,6 +421,7 @@ export default function Schedule() {
               occupation={popupInfo.occupation}
               position={popupInfo.position}
               onSplit={handleSplitFromPopup}
+              onCloseNow={handleCloseNowFromPopup}
               onClose={() => setPopupInfo(null)}
             />
           )}
