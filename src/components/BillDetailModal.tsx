@@ -1,6 +1,8 @@
 import type { Bill } from '@/types';
 import { useStore } from '@/store/useStore';
 import { formatDuration, formatCurrency, formatTime } from '@/utils/billing';
+import { GitMerge } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface BillDetailModalProps {
   open: boolean;
@@ -13,10 +15,12 @@ const statusConfig: Record<Bill['status'], { label: string; className: string }>
   paid: { label: '已付款', className: 'bg-green-600/20 text-green-400 border border-green-600/30' },
   refunded: { label: '已退款', className: 'bg-red-600/20 text-red-400 border border-red-600/30' },
   active: { label: '进行中', className: 'bg-yellow-600/20 text-yellow-400 border border-yellow-600/30' },
+  merged: { label: '已合并', className: 'bg-billiard-border/50 text-billiard-text-muted border border-billiard-border' },
 };
 
 export default function BillDetailModal({ open, onClose, bill, tableName }: BillDetailModalProps) {
   const markBillRefunded = useStore((s) => s.markBillRefunded);
+  const bills = useStore((s) => s.bills);
 
   if (!open || !bill) return null;
 
@@ -26,6 +30,8 @@ export default function BillDetailModal({ open, onClose, bill, tableName }: Bill
     markBillRefunded(bill.id);
     onClose();
   };
+
+  const mergedFromBills = bill.mergedFrom.map(id => bills.find(b => b.id === id)).filter(Boolean) as Bill[];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -39,6 +45,19 @@ export default function BillDetailModal({ open, onClose, bill, tableName }: Bill
             {status.label}
           </span>
         </div>
+
+        {bill.mergedFrom.length > 0 && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-billiard-gold/10 px-3 py-2 text-xs text-billiard-gold border border-billiard-gold/30">
+            <GitMerge size={14} />
+            <span>此账单由 {bill.mergedFrom.length} 笔账合并而成：{mergedFromBills.map(b => `${formatTime(b.startTime)}-${formatTime(b.endTime)}`).join('、')}</span>
+          </div>
+        )}
+        {bill.mergedInto && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-billiard-border/30 px-3 py-2 text-xs text-billiard-text-muted border border-billiard-border">
+            <GitMerge size={14} />
+            <span>此账单已合并到另一笔总账，不再参与营收统计</span>
+          </div>
+        )}
 
         <div className="mb-5 space-y-2 rounded-lg border border-billiard-border bg-billiard-card p-4">
           <div className="flex justify-between text-sm">
@@ -94,7 +113,7 @@ export default function BillDetailModal({ open, onClose, bill, tableName }: Bill
           >
             关闭
           </button>
-          {bill.status === 'paid' && (
+          {bill.status === 'paid' && !bill.mergedInto && (
             <button
               className="flex-1 rounded-lg bg-billiard-red px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-red-700"
               onClick={handleRefund}

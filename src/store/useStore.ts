@@ -176,6 +176,8 @@ export const useStore = create<StoreState>()(
           details,
           status: 'paid',
           createdAt: new Date().toISOString(),
+          mergedInto: null,
+          mergedFrom: [],
         };
 
         set(s => {
@@ -238,6 +240,8 @@ export const useStore = create<StoreState>()(
           details,
           status: 'paid',
           createdAt: new Date().toISOString(),
+          mergedInto: null,
+          mergedFrom: [],
         };
 
         const originalEnd = occ.endTime;
@@ -280,6 +284,8 @@ export const useStore = create<StoreState>()(
         if (tableOccs.length < 2) return;
 
         const merged: Occupation[] = [];
+        const billsToMarkMerged: { oldBillId: string; newBillId: string }[] = [];
+        const newBills: Bill[] = [];
         let current = { ...tableOccs[0], mergedFrom: [...tableOccs[0].mergedFrom] };
 
         for (let i = 1; i < tableOccs.length; i++) {
@@ -303,6 +309,46 @@ export const useStore = create<StoreState>()(
             } else {
               newEnd = current.endTime;
             }
+
+            const occIds = [current.id, next.id, ...current.mergedFrom, ...next.mergedFrom];
+            const oldBills = get().bills.filter(b =>
+              occIds.includes(b.occupationId) && b.status !== 'merged' && b.status !== 'refunded'
+            );
+
+            if (oldBills.length > 0) {
+              const startTime = new Date(Math.min(
+                ...oldBills.map(b => new Date(b.startTime).getTime())
+              )).toISOString();
+              const endTime = newEnd ?? new Date(Math.max(
+                ...oldBills.map(b => new Date(b.endTime).getTime())
+              )).toISOString();
+              const totalMinutes = computeMinutesBetween(startTime, endTime);
+              const tiers = get().getTiersForTable(tableId);
+              const details = calculateBillDetails(tiers, totalMinutes);
+              const total = calculateTotal(details);
+
+              const allPaid = oldBills.every(b => b.status === 'paid');
+
+              const newBillId = genId('bill_');
+              const mergedBill: Bill = {
+                id: newBillId,
+                occupationId: current.id,
+                tableId,
+                customerName: current.customerName,
+                startTime,
+                endTime,
+                totalMinutes,
+                totalAmount: total,
+                details,
+                status: allPaid ? 'paid' : 'active',
+                createdAt: new Date().toISOString(),
+                mergedInto: null,
+                mergedFrom: oldBills.map(b => b.id),
+              };
+              newBills.push(mergedBill);
+              oldBills.forEach(b => billsToMarkMerged.push({ oldBillId: b.id, newBillId }));
+            }
+
             current = {
               ...current,
               endTime: newEnd,
@@ -317,9 +363,22 @@ export const useStore = create<StoreState>()(
 
         const otherOccs = get().occupations.filter(o => o.tableId !== tableId);
         const allOccs = [...otherOccs, ...merged];
-        set({
-          occupations: allOccs,
-          tables: updateTableStatuses(allOccs)(get().tables),
+
+        set(s => {
+          let updatedBills = s.bills.map(b => {
+            const mark = billsToMarkMerged.find(m => m.oldBillId === b.id);
+            if (mark) {
+              return { ...b, status: 'merged' as const, mergedInto: mark.newBillId };
+            }
+            return b;
+          });
+          updatedBills = [...updatedBills, ...newBills];
+
+          return {
+            occupations: allOccs,
+            bills: updatedBills,
+            tables: updateTableStatuses(allOccs)(s.tables),
+          };
         });
       },
 

@@ -24,7 +24,7 @@ export default function SplitOccupationModal({ open, onClose, occupation }: Spli
       const hh = String(now.getHours()).padStart(2, '0');
       const mm = String(now.getMinutes()).padStart(2, '0');
       setSplitTime(`${hh}:${mm}`);
-      setKeepSecondHalf(true);
+      setKeepSecondHalf(occupation.endTime !== null);
       setLastResult(null);
     }
   }, [open, occupation]);
@@ -40,6 +40,7 @@ export default function SplitOccupationModal({ open, onClose, occupation }: Spli
   const splitMs = splitDate.getTime();
   const consumedMinutes = Math.max(0, Math.floor((splitMs - startMs) / 60000));
 
+  const isActiveNow = occupation.endTime === null;
   const endMs = occupation.endTime ? new Date(occupation.endTime).getTime() : Date.now();
   const releasedMinutes = Math.max(0, Math.floor((endMs - splitMs) / 60000));
   const totalMinutes = Math.max(1, consumedMinutes + releasedMinutes);
@@ -60,8 +61,9 @@ export default function SplitOccupationModal({ open, onClose, occupation }: Spli
     }
   };
 
-  const isSplitValid = consumedMinutes > 0 && releasedMinutes > 0;
-  const isActiveNow = occupation.endTime === null;
+  const isSplitValid = isActiveNow
+    ? consumedMinutes > 0
+    : consumedMinutes > 0 && releasedMinutes > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>

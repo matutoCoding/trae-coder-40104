@@ -50,6 +50,8 @@ export interface Bill {
   totalMinutes: number;
   totalAmount: number;
   details: BillDetail[];
-  status: 'active' | 'paid' | 'refunded';
+  status: 'active' | 'paid' | 'refunded' | 'merged';
   createdAt: string;
+  mergedInto: string | null;
+  mergedFrom: string[];
 }

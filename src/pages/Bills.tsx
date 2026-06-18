@@ -11,6 +11,7 @@ const statusBadge: Record<Bill['status'], { label: string; className: string }> 
   paid: { label: '已付款', className: 'bg-green-600/20 text-green-400 border border-green-600/30' },
   refunded: { label: '已退款', className: 'bg-red-600/20 text-red-400 border border-red-600/30' },
   active: { label: '进行中', className: 'bg-yellow-600/20 text-yellow-400 border border-yellow-600/30' },
+  merged: { label: '已合并', className: 'bg-billiard-border/50 text-billiard-text-muted border border-billiard-border' },
 };
 
 export default function Bills() {
@@ -18,7 +19,7 @@ export default function Bills() {
   const tables = useStore((s) => s.tables);
   const occupations = useStore((s) => s.occupations);
   const getLiveBillDetails = useStore((s) => s.getLiveBillDetails);
-  const closeTable = useStore((s) => s.closeTable);
+  const closeTableByOccupation = useStore((s) => s.closeTableByOccupation);
 
   const [tab, setTab] = useState<TabKey>('active');
   const [now, setNow] = useState(Date.now());
@@ -41,7 +42,11 @@ export default function Bills() {
   const [filterTableId, setFilterTableId] = useState('');
   const [filterCustomer, setFilterCustomer] = useState('');
 
-  const activeOccupations = occupations.filter((o) => o.endTime === null);
+  const activeOccupations = occupations.filter((o) => {
+    const start = new Date(o.startTime).getTime();
+    const end = o.endTime ? new Date(o.endTime).getTime() : Infinity;
+    return now >= start && now < end;
+  });
 
   const getTableName = useCallback(
     (tableId: string) => tables.find((t) => t.id === tableId)?.name ?? '-',
@@ -49,7 +54,7 @@ export default function Bills() {
   );
 
   const handleCheckout = (occ: Occupation) => {
-    const bill = closeTable(occ.tableId);
+    const bill = closeTableByOccupation(occ.id);
     setCheckoutBill(bill);
     setCheckoutTableName(getTableName(occ.tableId));
     setCheckoutOpen(true);
@@ -63,6 +68,7 @@ export default function Bills() {
 
   const filteredBills = bills
     .filter((b) => {
+      if (b.status === 'merged') return false;
       if (dateFrom && b.createdAt < dateFrom) return false;
       if (dateTo) {
         const toDate = new Date(dateTo);
