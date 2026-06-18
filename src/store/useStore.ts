@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Tier, TierGroup, TableItem, Occupation, Bill, BillDetail } from '@/types';
 import { genId } from '@/utils/id';
-import { calculateBillDetails, calculateTotal, getElapsedMinutes } from '@/utils/billing';
+import { calculateBillDetails, calculateTotal } from '@/utils/billing';
 
 const DEFAULT_OPEN_TIER_GROUP: TierGroup = {
   id: 'tg_open',
@@ -37,27 +37,27 @@ function computeMinutesBetween(start: string, end: string): number {
   return Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000));
 }
 
+function liveEndTime(occ: Occupation): string {
+  const now = new Date().toISOString();
+  if (!occ.endTime) return now;
+  return new Date(occ.endTime).getTime() < Date.now() ? occ.endTime : now;
+}
+
 function updateTableStatuses(occupations: Occupation[]): (tables: TableItem[]) => TableItem[] {
   return (tables) => {
     return tables.map(t => {
-      const active = occupations.find(
-        o => o.tableId === t.id && (
-          (o.endTime === null) ||
-          (new Date(o.endTime).getTime() > Date.now() && new Date(o.startTime).getTime() <= Date.now())
-        )
-      );
-      if (active && active.endTime === null) {
-        return { ...t, status: 'occupied' as const };
-      }
-      if (active) {
-        return { ...t, status: 'occupied' as const };
-      }
+      const now = Date.now();
+      const active = occupations.find(o => {
+        if (o.tableId !== t.id) return false;
+        const start = new Date(o.startTime).getTime();
+        const end = o.endTime ? new Date(o.endTime).getTime() : Infinity;
+        return now >= start && now < end;
+      });
+      if (active) return { ...t, status: 'occupied' as const };
       const future = occupations.find(
-        o => o.tableId === t.id && new Date(o.startTime).getTime() > Date.now()
+        o => o.tableId === t.id && new Date(o.startTime).getTime() > now
       );
-      if (future) {
-        return { ...t, status: 'reserved' as const };
-      }
+      if (future) return { ...t, status: 'reserved' as const };
       if (t.status === 'maintenance') return t;
       return { ...t, status: 'available' as const };
     });
@@ -143,10 +143,11 @@ export const useStore = create<StoreState>()(
       },
 
       closeTable: (tableId) => {
+        const now = Date.now();
         const activeOccs = get().occupations.filter(
           o => o.tableId === tableId && (
             (o.endTime === null) ||
-            (new Date(o.endTime).getTime() > Date.now() && new Date(o.startTime).getTime() <= Date.now())
+            (new Date(o.endTime).getTime() > now && new Date(o.startTime).getTime() <= now)
           )
         );
         const target = activeOccs.find(o => o.endTime === null) || activeOccs[0];
@@ -164,6 +165,11 @@ export const useStore = create<StoreState>()(
         const details = calculateBillDetails(tiers, totalMinutes);
         const total = calculateTotal(details);
 
+        const allOccIds = [occ.id, ...occ.mergedFrom];
+        const oldMergedBills = get().bills.filter(b =>
+          b.status === 'merged' && b.mergedInto === null && allOccIds.includes(b.occupationId)
+        );
+
         const bill: Bill = {
           id: genId('bill_'),
           occupationId: occ.id,
@@ -177,16 +183,22 @@ export const useStore = create<StoreState>()(
           status: 'paid',
           createdAt: new Date().toISOString(),
           mergedInto: null,
-          mergedFrom: [],
+          mergedFrom: oldMergedBills.map(b => b.id),
         };
 
         set(s => {
           const newOccs = s.occupations.map(o =>
             o.id === occupationId ? { ...o, endTime } : o
           );
+          const updatedBills = s.bills.map(b => {
+            if (b.status === 'merged' && b.mergedInto === null && allOccIds.includes(b.occupationId)) {
+              return { ...b, mergedInto: bill.id };
+            }
+            return b;
+          });
           return {
             occupations: newOccs,
-            bills: [...s.bills, bill],
+            bills: [...updatedBills, bill],
             tables: updateTableStatuses(newOccs)(s.tables),
           };
         });
@@ -245,7 +257,6 @@ export const useStore = create<StoreState>()(
         };
 
         const originalEnd = occ.endTime;
-        const originalMerged = occ.mergedFrom;
 
         set(s => {
           let newOccs = s.occupations.map(o =>
@@ -284,8 +295,7 @@ export const useStore = create<StoreState>()(
         if (tableOccs.length < 2) return;
 
         const merged: Occupation[] = [];
-        const billsToMarkMerged: { oldBillId: string; newBillId: string }[] = [];
-        const newBills: Bill[] = [];
+        let didMerge = false;
         let current = { ...tableOccs[0], mergedFrom: [...tableOccs[0].mergedFrom] };
 
         for (let i = 1; i < tableOccs.length; i++) {
@@ -310,50 +320,12 @@ export const useStore = create<StoreState>()(
               newEnd = current.endTime;
             }
 
-            const occIds = [current.id, next.id, ...current.mergedFrom, ...next.mergedFrom];
-            const oldBills = get().bills.filter(b =>
-              occIds.includes(b.occupationId) && b.status !== 'merged' && b.status !== 'refunded'
-            );
-
-            if (oldBills.length > 0) {
-              const startTime = new Date(Math.min(
-                ...oldBills.map(b => new Date(b.startTime).getTime())
-              )).toISOString();
-              const endTime = newEnd ?? new Date(Math.max(
-                ...oldBills.map(b => new Date(b.endTime).getTime())
-              )).toISOString();
-              const totalMinutes = computeMinutesBetween(startTime, endTime);
-              const tiers = get().getTiersForTable(tableId);
-              const details = calculateBillDetails(tiers, totalMinutes);
-              const total = calculateTotal(details);
-
-              const allPaid = oldBills.every(b => b.status === 'paid');
-
-              const newBillId = genId('bill_');
-              const mergedBill: Bill = {
-                id: newBillId,
-                occupationId: current.id,
-                tableId,
-                customerName: current.customerName,
-                startTime,
-                endTime,
-                totalMinutes,
-                totalAmount: total,
-                details,
-                status: allPaid ? 'paid' : 'active',
-                createdAt: new Date().toISOString(),
-                mergedInto: null,
-                mergedFrom: oldBills.map(b => b.id),
-              };
-              newBills.push(mergedBill);
-              oldBills.forEach(b => billsToMarkMerged.push({ oldBillId: b.id, newBillId }));
-            }
-
             current = {
               ...current,
               endTime: newEnd,
               mergedFrom: [...current.mergedFrom, next.id, ...next.mergedFrom],
             };
+            didMerge = true;
           } else {
             merged.push(current);
             current = { ...next, mergedFrom: [...next.mergedFrom] };
@@ -361,18 +333,23 @@ export const useStore = create<StoreState>()(
         }
         merged.push(current);
 
+        if (!didMerge) return;
+
         const otherOccs = get().occupations.filter(o => o.tableId !== tableId);
         const allOccs = [...otherOccs, ...merged];
 
         set(s => {
-          let updatedBills = s.bills.map(b => {
-            const mark = billsToMarkMerged.find(m => m.oldBillId === b.id);
-            if (mark) {
-              return { ...b, status: 'merged' as const, mergedInto: mark.newBillId };
+          const allOccIds = merged.flatMap(m => [m.id, ...m.mergedFrom]);
+          const updatedBills = s.bills.map(b => {
+            if (
+              b.status !== 'merged' &&
+              b.status !== 'refunded' &&
+              allOccIds.includes(b.occupationId)
+            ) {
+              return { ...b, status: 'merged' as const, mergedInto: null };
             }
             return b;
           });
-          updatedBills = [...updatedBills, ...newBills];
 
           return {
             occupations: allOccs,
@@ -490,8 +467,8 @@ export const useStore = create<StoreState>()(
         const occ = get().occupations.find(o => o.id === occupationId);
         if (!occ) return { details: [], total: 0, elapsed: 0 };
 
-        const endTime = occ.endTime ?? new Date().toISOString();
-        const elapsed = computeMinutesBetween(occ.startTime, endTime);
+        const effectiveEnd = liveEndTime(occ);
+        const elapsed = computeMinutesBetween(occ.startTime, effectiveEnd);
         const tiers = get().getTiersForTable(occ.tableId);
         const details = calculateBillDetails(tiers, elapsed);
         const total = calculateTotal(details);
@@ -500,7 +477,7 @@ export const useStore = create<StoreState>()(
       },
     }),
     {
-      name: 'billiard-store-v2',
+      name: 'billiard-store-v3',
     }
   )
 );
