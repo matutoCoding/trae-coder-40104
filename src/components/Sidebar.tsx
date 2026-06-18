@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Calculator, Receipt, Calendar, Circle } from 'lucide-react';
+import { LayoutDashboard, Calculator, Receipt, Calendar, Circle, Users } from 'lucide-react';
 
 const navItems = [
   { to: '/', label: '大厅总览', icon: LayoutDashboard },
   { to: '/billing', label: '阶梯计费', icon: Calculator },
   { to: '/bills', label: '账单管理', icon: Receipt },
   { to: '/schedule', label: '球台排期', icon: Calendar },
+  { to: '/members', label: '会员档案', icon: Users },
 ];
 
 export default function Sidebar() {

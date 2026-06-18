@@ -20,11 +20,22 @@ export interface TableItem {
   status: 'available' | 'occupied' | 'reserved' | 'maintenance';
 }
 
+export interface Member {
+  id: string;
+  name: string;
+  phone: string;
+  balance: number;
+  discount: number;
+  discountLabel: string;
+  createdAt: string;
+}
+
 export interface Occupation {
   id: string;
   tableId: string;
   customerName: string;
   customerPhone: string;
+  memberId: string | null;
   startTime: string;
   endTime: string | null;
   mergedFrom: string[];
@@ -45,10 +56,15 @@ export interface Bill {
   occupationId: string;
   tableId: string;
   customerName: string;
+  memberId: string | null;
   startTime: string;
   endTime: string;
   totalMinutes: number;
   totalAmount: number;
+  originalAmount: number;
+  discountRate: number;
+  discountLabel: string;
+  balanceUsed: number;
   details: BillDetail[];
   status: 'active' | 'paid' | 'refunded' | 'merged';
   createdAt: string;

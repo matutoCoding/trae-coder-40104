@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Tier, TierGroup, TableItem, Occupation, Bill, BillDetail } from '@/types';
+import type { Tier, TierGroup, TableItem, Occupation, Bill, BillDetail, Member } from '@/types';
 import { genId } from '@/utils/id';
 import { calculateBillDetails, calculateTotal } from '@/utils/billing';
 
@@ -33,6 +33,31 @@ const DEFAULT_TABLES: TableItem[] = [
   { id: 'tbl_6', name: 'VIP包厢2', category: 'vip', tierGroupId: 'tg_vip', status: 'available' },
 ];
 
+const DEFAULT_MEMBERS: Member[] = [
+  {
+    id: 'mbr_demo1',
+    name: '张先生',
+    phone: '13800138000',
+    balance: 500,
+    discount: 0.85,
+    discountLabel: '金卡会员 85折',
+    createdAt: new Date(Date.now() - 86400000 * 60).toISOString(),
+  },
+  {
+    id: 'mbr_demo2',
+    name: '李小姐',
+    phone: '13900139000',
+    balance: 200,
+    discount: 0.95,
+    discountLabel: '普通会员 95折',
+    createdAt: new Date(Date.now() - 86400000 * 15).toISOString(),
+  },
+];
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function computeMinutesBetween(start: string, end: string): number {
   return Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000));
 }
@@ -64,15 +89,105 @@ function updateTableStatuses(occupations: Occupation[]): (tables: TableItem[]) =
   };
 }
 
+function startOfDayISO(d: Date): string {
+  const nd = new Date(d);
+  nd.setHours(0, 0, 0, 0);
+  return nd.toISOString();
+}
+function endOfDayISO(d: Date): string {
+  const nd = new Date(d);
+  nd.setHours(23, 59, 59, 999);
+  return nd.toISOString();
+}
+
+export interface RevenueStats {
+  received: number;
+  refunded: number;
+  net: number;
+  minutesUsed: number;
+  billCount: number;
+  uniqueTables: number;
+}
+
+function computeRevenueStats(bills: Bill[], fromISO: string, toISO: string): RevenueStats {
+  const from = new Date(fromISO).getTime();
+  const to = new Date(toISO).getTime();
+  let received = 0;
+  let refunded = 0;
+  let minutesUsed = 0;
+  let billCount = 0;
+  const tableSet = new Set<string>();
+
+  for (const b of bills) {
+    if (b.status === 'merged') continue;
+    const t = new Date(b.createdAt).getTime();
+    if (t < from || t > to) continue;
+    if (b.status === 'paid') {
+      received += b.totalAmount;
+      minutesUsed += b.totalMinutes;
+      tableSet.add(b.tableId);
+      billCount++;
+    } else if (b.status === 'refunded') {
+      refunded += b.totalAmount;
+    }
+  }
+
+  return {
+    received: round2(received),
+    refunded: round2(refunded),
+    net: round2(received - refunded),
+    minutesUsed,
+    billCount,
+    uniqueTables: tableSet.size,
+  };
+}
+
+export interface MemberStats {
+  totalPaid: number;
+  totalMinutes: number;
+  visitCount: number;
+  firstVisitAt: string | null;
+  lastVisitAt: string | null;
+  bills: Bill[];
+}
+
+function computeMemberStats(memberId: string, bills: Bill[]): MemberStats {
+  const myBills = bills.filter(
+    b => b.memberId === memberId && b.status !== 'merged' && b.status !== 'active'
+  ).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  let totalPaid = 0;
+  let totalMinutes = 0;
+  let visitCount = 0;
+
+  for (const b of myBills) {
+    if (b.status === 'paid') {
+      totalPaid += b.totalAmount;
+      totalMinutes += b.totalMinutes;
+      visitCount++;
+    }
+  }
+
+  return {
+    totalPaid: round2(totalPaid),
+    totalMinutes,
+    visitCount,
+    firstVisitAt: myBills[0]?.createdAt ?? null,
+    lastVisitAt: myBills[myBills.length - 1]?.createdAt ?? null,
+    bills: myBills,
+  };
+}
+
 interface StoreState {
   tierGroups: TierGroup[];
   tables: TableItem[];
   occupations: Occupation[];
   bills: Bill[];
+  members: Member[];
 
-  openTable: (tableId: string, customerName: string, customerPhone: string, startTime?: string) => void;
-  closeTableByOccupation: (occupationId: string, endTimeOverride?: string) => Bill;
-  closeTable: (tableId: string) => Bill;
+  openTable: (tableId: string, customerName: string, customerPhone: string, startTime?: string, memberId?: string | null) => void;
+  closeTableByOccupation: (occupationId: string, endTimeOverride?: string, useBalance?: boolean) => Bill;
+  closeTable: (tableId: string, useBalance?: boolean) => Bill;
   extendOccupation: (occupationId: string, newEndTime: string) => void;
   splitOccupation: (occupationId: string, splitTime: string, keepSecondHalf?: boolean) => { bill: Bill | null; splitSuccess: boolean };
   mergeAdjacentOccupations: (tableId: string) => void;
@@ -88,12 +203,23 @@ interface StoreState {
   updateTable: (id: string, data: Partial<TableItem>) => void;
   deleteTable: (id: string) => void;
 
+  addMember: (data: { name: string; phone: string; balance?: number; discount?: number; discountLabel?: string }) => Member;
+  updateMember: (id: string, data: Partial<Omit<Member, 'id' | 'createdAt'>>) => void;
+  rechargeMember: (id: string, amount: number) => void;
+  deleteMember: (id: string) => void;
+  getMemberById: (id: string) => Member | undefined;
+  getMemberStats: (memberId: string) => MemberStats;
+
   markBillPaid: (billId: string) => void;
   markBillRefunded: (billId: string) => void;
 
   getOccupationForTable: (tableId: string) => Occupation | undefined;
   getTiersForTable: (tableId: string) => Tier[];
-  getLiveBillDetails: (occupationId: string) => { details: BillDetail[]; total: number; elapsed: number };
+  getLiveBillDetails: (occupationId: string) => { details: BillDetail[]; total: number; elapsed: number; originalAmount: number; discountRate: number; discountLabel: string; member: Member | null };
+
+  getRevenueStatsToday: () => RevenueStats;
+  getRevenueStatsThisWeek: () => RevenueStats;
+  getRevenueStatsThisMonth: () => RevenueStats;
 }
 
 export const useStore = create<StoreState>()(
@@ -103,8 +229,9 @@ export const useStore = create<StoreState>()(
       tables: DEFAULT_TABLES,
       occupations: [],
       bills: [],
+      members: DEFAULT_MEMBERS,
 
-      openTable: (tableId, customerName, customerPhone, startTime) => {
+      openTable: (tableId, customerName, customerPhone, startTime, memberId = null) => {
         const table = get().tables.find(t => t.id === tableId);
         if (!table) return;
 
@@ -120,11 +247,23 @@ export const useStore = create<StoreState>()(
           }
         }
 
+        let finalMemberId = memberId;
+        let finalName = customerName;
+        let finalPhone = customerPhone;
+        if (memberId) {
+          const m = get().members.find(x => x.id === memberId);
+          if (m) {
+            finalName = m.name;
+            finalPhone = m.phone;
+          }
+        }
+
         const occupation: Occupation = {
           id: genId('occ_'),
           tableId,
-          customerName,
-          customerPhone,
+          customerName: finalName,
+          customerPhone: finalPhone,
+          memberId: finalMemberId,
           startTime: effectiveStart,
           endTime: null,
           mergedFrom: [],
@@ -142,7 +281,7 @@ export const useStore = create<StoreState>()(
         get().mergeAdjacentOccupations(tableId);
       },
 
-      closeTable: (tableId) => {
+      closeTable: (tableId, useBalance = true) => {
         const now = Date.now();
         const activeOccs = get().occupations.filter(
           o => o.tableId === tableId && (
@@ -152,10 +291,10 @@ export const useStore = create<StoreState>()(
         );
         const target = activeOccs.find(o => o.endTime === null) || activeOccs[0];
         if (!target) throw new Error('No active occupation found');
-        return get().closeTableByOccupation(target.id);
+        return get().closeTableByOccupation(target.id, undefined, useBalance);
       },
 
-      closeTableByOccupation: (occupationId, endTimeOverride) => {
+      closeTableByOccupation: (occupationId, endTimeOverride, useBalance = true) => {
         const occ = get().occupations.find(o => o.id === occupationId);
         if (!occ) throw new Error('Occupation not found');
 
@@ -163,22 +302,38 @@ export const useStore = create<StoreState>()(
         const totalMinutes = computeMinutesBetween(occ.startTime, endTime);
         const tiers = get().getTiersForTable(occ.tableId);
         const details = calculateBillDetails(tiers, totalMinutes);
-        const total = calculateTotal(details);
+        const originalAmount = calculateTotal(details);
+
+        const member = occ.memberId ? get().members.find(m => m.id === occ.memberId) ?? null : null;
+        const discountRate = member?.discount ?? 1;
+        const discountLabel = member?.discountLabel ?? '';
+        let totalAmount = round2(originalAmount * discountRate);
 
         const allOccIds = [occ.id, ...occ.mergedFrom];
         const oldMergedBills = get().bills.filter(b =>
           b.status === 'merged' && b.mergedInto === null && allOccIds.includes(b.occupationId)
         );
 
+        let balanceUsed = 0;
+        if (useBalance && member && totalAmount > 0) {
+          const usable = Math.min(member.balance, totalAmount);
+          balanceUsed = round2(usable);
+        }
+
         const bill: Bill = {
           id: genId('bill_'),
           occupationId: occ.id,
           tableId: occ.tableId,
           customerName: occ.customerName,
+          memberId: occ.memberId,
           startTime: occ.startTime,
           endTime,
           totalMinutes,
-          totalAmount: total,
+          totalAmount: round2(totalAmount - balanceUsed),
+          originalAmount,
+          discountRate,
+          discountLabel,
+          balanceUsed,
           details,
           status: 'paid',
           createdAt: new Date().toISOString(),
@@ -190,15 +345,25 @@ export const useStore = create<StoreState>()(
           const newOccs = s.occupations.map(o =>
             o.id === occupationId ? { ...o, endTime } : o
           );
-          const updatedBills = s.bills.map(b => {
+          let updatedBills = s.bills.map(b => {
             if (b.status === 'merged' && b.mergedInto === null && allOccIds.includes(b.occupationId)) {
               return { ...b, mergedInto: bill.id };
             }
             return b;
           });
+          updatedBills = [...updatedBills, bill];
+
+          let updatedMembers = s.members;
+          if (member && balanceUsed > 0) {
+            updatedMembers = s.members.map(m =>
+              m.id === member.id ? { ...m, balance: round2(m.balance - balanceUsed) } : m
+            );
+          }
+
           return {
             occupations: newOccs,
-            bills: [...updatedBills, bill],
+            bills: updatedBills,
+            members: updatedMembers,
             tables: updateTableStatuses(newOccs)(s.tables),
           };
         });
@@ -238,17 +403,27 @@ export const useStore = create<StoreState>()(
         const firstHalfMinutes = computeMinutesBetween(occ.startTime, splitTime);
         const tiers = get().getTiersForTable(occ.tableId);
         const details = calculateBillDetails(tiers, firstHalfMinutes);
-        const total = calculateTotal(details);
+        const originalAmount = calculateTotal(details);
+
+        const member = occ.memberId ? get().members.find(m => m.id === occ.memberId) ?? null : null;
+        const discountRate = member?.discount ?? 1;
+        const discountLabel = member?.discountLabel ?? '';
+        const totalAmount = round2(originalAmount * discountRate);
 
         const bill: Bill = {
           id: genId('bill_'),
           occupationId: occ.id,
           tableId: occ.tableId,
           customerName: occ.customerName,
+          memberId: occ.memberId,
           startTime: occ.startTime,
           endTime: splitTime,
           totalMinutes: firstHalfMinutes,
-          totalAmount: total,
+          totalAmount,
+          originalAmount,
+          discountRate,
+          discountLabel,
+          balanceUsed: 0,
           details,
           status: 'paid',
           createdAt: new Date().toISOString(),
@@ -269,6 +444,7 @@ export const useStore = create<StoreState>()(
               tableId: occ.tableId,
               customerName: occ.customerName,
               customerPhone: occ.customerPhone,
+              memberId: occ.memberId,
               startTime: splitTime,
               endTime: originalEnd,
               mergedFrom: [],
@@ -308,7 +484,8 @@ export const useStore = create<StoreState>()(
             currentEnd !== null &&
             nextStart !== null &&
             Math.abs(nextStart - currentEnd) <= 60 * 1000 &&
-            current.customerName === next.customerName;
+            current.customerName === next.customerName &&
+            (current.memberId ?? null) === (next.memberId ?? null);
 
           if (adjacentOrOverlap) {
             let newEnd: string | null;
@@ -430,6 +607,46 @@ export const useStore = create<StoreState>()(
         }));
       },
 
+      addMember: (data) => {
+        const member: Member = {
+          id: genId('mbr_'),
+          name: data.name,
+          phone: data.phone,
+          balance: data.balance ?? 0,
+          discount: data.discount ?? 1,
+          discountLabel: data.discountLabel ?? '无折扣',
+          createdAt: new Date().toISOString(),
+        };
+        set(s => ({ members: [...s.members, member] }));
+        return member;
+      },
+
+      updateMember: (id, data) => {
+        set(s => ({
+          members: s.members.map(m => m.id === id ? { ...m, ...data } : m),
+        }));
+      },
+
+      rechargeMember: (id, amount) => {
+        set(s => ({
+          members: s.members.map(m =>
+            m.id === id ? { ...m, balance: round2(m.balance + amount) } : m
+          ),
+        }));
+      },
+
+      deleteMember: (id) => {
+        set(s => ({ members: s.members.filter(m => m.id !== id) }));
+      },
+
+      getMemberById: (id) => {
+        return get().members.find(m => m.id === id);
+      },
+
+      getMemberStats: (memberId) => {
+        return computeMemberStats(memberId, get().bills);
+      },
+
       markBillPaid: (billId) => {
         set(s => ({
           bills: s.bills.map(b => b.id === billId ? { ...b, status: 'paid' as const } : b),
@@ -437,9 +654,21 @@ export const useStore = create<StoreState>()(
       },
 
       markBillRefunded: (billId) => {
-        set(s => ({
-          bills: s.bills.map(b => b.id === billId ? { ...b, status: 'refunded' as const } : b),
-        }));
+        const bill = get().bills.find(b => b.id === billId);
+        if (!bill) return;
+
+        set(s => {
+          let updatedMembers = s.members;
+          if (bill.memberId && bill.balanceUsed > 0) {
+            updatedMembers = s.members.map(m =>
+              m.id === bill.memberId ? { ...m, balance: round2(m.balance + bill.balanceUsed) } : m
+            );
+          }
+          return {
+            bills: s.bills.map(b => b.id === billId ? { ...b, status: 'refunded' as const } : b),
+            members: updatedMembers,
+          };
+        });
       },
 
       getOccupationForTable: (tableId) => {
@@ -465,19 +694,46 @@ export const useStore = create<StoreState>()(
 
       getLiveBillDetails: (occupationId) => {
         const occ = get().occupations.find(o => o.id === occupationId);
-        if (!occ) return { details: [], total: 0, elapsed: 0 };
+        if (!occ) return { details: [], total: 0, elapsed: 0, originalAmount: 0, discountRate: 1, discountLabel: '', member: null };
 
         const effectiveEnd = liveEndTime(occ);
         const elapsed = computeMinutesBetween(occ.startTime, effectiveEnd);
         const tiers = get().getTiersForTable(occ.tableId);
         const details = calculateBillDetails(tiers, elapsed);
-        const total = calculateTotal(details);
+        const originalAmount = calculateTotal(details);
 
-        return { details, total, elapsed };
+        const member = occ.memberId ? get().members.find(m => m.id === occ.memberId) ?? null : null;
+        const discountRate = member?.discount ?? 1;
+        const discountLabel = member?.discountLabel ?? '';
+        const total = round2(originalAmount * discountRate);
+
+        return { details, total, elapsed, originalAmount, discountRate, discountLabel, member };
+      },
+
+      getRevenueStatsToday: () => {
+        const now = new Date();
+        return computeRevenueStats(get().bills, startOfDayISO(now), endOfDayISO(now));
+      },
+
+      getRevenueStatsThisWeek: () => {
+        const now = new Date();
+        const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1;
+        const weekStart = new Date(now);
+        weekStart.setDate(now.getDate() - dayOfWeek);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+        return computeRevenueStats(get().bills, startOfDayISO(weekStart), endOfDayISO(weekEnd));
+      },
+
+      getRevenueStatsThisMonth: () => {
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        return computeRevenueStats(get().bills, startOfDayISO(monthStart), endOfDayISO(monthEnd));
       },
     }),
     {
-      name: 'billiard-store-v3',
+      name: 'billiard-store-v4',
     }
   )
 );

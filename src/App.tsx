@@ -4,6 +4,7 @@ import Lobby from "@/pages/Lobby";
 import Billing from "@/pages/Billing";
 import Bills from "@/pages/Bills";
 import Schedule from "@/pages/Schedule";
+import Members from "@/pages/Members";
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/billing" element={<Billing />} />
           <Route path="/bills" element={<Bills />} />
           <Route path="/schedule" element={<Schedule />} />
+          <Route path="/members" element={<Members />} />
         </Route>
       </Routes>
     </Router>

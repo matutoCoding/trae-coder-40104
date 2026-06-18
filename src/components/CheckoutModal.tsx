@@ -1,5 +1,6 @@
 import type { Bill } from '@/types';
 import { formatDuration, formatCurrency, formatTime } from '@/utils/billing';
+import { Wallet, Percent } from 'lucide-react';
 
 interface CheckoutModalProps {
   open: boolean;
@@ -63,9 +64,27 @@ export default function CheckoutModal({ open, onClose, bill, tableName }: Checko
           </tbody>
         </table>
 
-        <div className="mb-6 flex items-center justify-between rounded-lg border border-billiard-gold/30 bg-billiard-card px-4 py-3">
-          <span className="text-lg font-medium text-billiard-text">合计</span>
-          <span className="text-2xl font-bold text-billiard-gold">{formatCurrency(bill.totalAmount)}</span>
+        <div className="mb-6 space-y-2 rounded-lg border border-billiard-gold/30 bg-billiard-card px-4 py-3">
+          <div className="flex justify-between text-sm">
+            <span className="text-billiard-text-muted">原始金额</span>
+            <span className="text-billiard-text">{formatCurrency(bill.originalAmount)}</span>
+          </div>
+          {bill.discountRate < 1 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-billiard-text-muted flex items-center gap-1"><Percent size={12} />{bill.discountLabel || '会员折扣'}</span>
+              <span className="text-billiard-gold">-{formatCurrency(bill.originalAmount * (1 - bill.discountRate))}</span>
+            </div>
+          )}
+          {bill.balanceUsed > 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-billiard-text-muted flex items-center gap-1"><Wallet size={12} />余额抵扣</span>
+              <span className="text-billiard-gold">-{formatCurrency(bill.balanceUsed)}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between pt-2 mt-2 border-t border-billiard-gold/20">
+            <span className="text-lg font-medium text-billiard-text">实收</span>
+            <span className="text-2xl font-bold text-billiard-gold">{formatCurrency(bill.totalAmount)}</span>
+          </div>
         </div>
 
         <div className="flex gap-3">
